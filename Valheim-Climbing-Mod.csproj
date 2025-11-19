@@ -1,14 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
-    <RootNamespace>Valheim_Climbing_Mod</RootNamespace>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
+    <TargetFramework>net472</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="HarmonyX" Version="2.15.0" />
     <Reference Include="BepInEx">
       <HintPath>C:\Users\hecto\AppData\Roaming\r2modmanPlus-local\Valheim\profiles\Hec\BepInEx\core\BepInEx.dll</HintPath>
     </Reference>
@@ -18,16 +17,17 @@
     </Reference>
 
     <Reference Include="UnityEngine">
-      <HintPath>"C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.dll"</HintPath>
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.dll</HintPath>
     </Reference>
 
     <Reference Include="UnityEngine.CoreModule">
-      <HintPath>"C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.CoreModule.dll"</HintPath>
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
     </Reference>
 
     <Reference Include="assembly_valheim">
-      <HintPath>"C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\assembly_valheim.dll"</HintPath>
+      <HintPath>C:\Program Files (x86)\Steam\steamapps\common\Valheim\Valheim_Data\Managed\assembly_valheim.dll</HintPath>
     </Reference>
+
   </ItemGroup>
 
 </Project>

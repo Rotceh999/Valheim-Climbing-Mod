@@ -173,9 +173,9 @@ namespace Valheim_Climbing_Mod
             
             if (isClimbing)
             {
-                 // For remote players, we might want to sync the speed or just play a default loop
-                 // Since we don't sync input, we can just update with 0 input to keep the pose
-                 ClimbAnimationController.Update(player, 0f, 1f); 
+                 // Read synced input from ZDO
+                 float climbInput = nview.GetZDO().GetFloat("ClimbInput", 0f);
+                 ClimbAnimationController.Update(player, climbInput, 1f); 
             }
         }
 
@@ -362,6 +362,13 @@ namespace Valheim_Climbing_Mod
             // Update animation state
             float animationInput = ResolveAnimationInput(forwardInput, rightInput);
             ClimbAnimationController.Update(player, animationInput, slopeSpeedFactor);
+
+            // Sync input for remote players
+            ZNetView nview = player.GetComponent<ZNetView>();
+            if (nview != null && nview.IsValid())
+            {
+                nview.GetZDO().Set("ClimbInput", animationInput);
+            }
 
             ApplyClimbStaminaDrain(player, forwardInput, rightInput);
         }

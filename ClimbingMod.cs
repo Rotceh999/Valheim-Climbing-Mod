@@ -17,6 +17,7 @@ namespace Valheim_Climbing_Mod
     public class ClimbingModPlugin : BaseUnityPlugin
     {
         public static BepInEx.Configuration.ConfigEntry<KeyCode> ClimbKey;
+        public static BepInEx.Configuration.ConfigEntry<KeyCode> ClimbKey2;
         public static BepInEx.Configuration.ConfigEntry<float> ClimbSpeedUp;
         public static BepInEx.Configuration.ConfigEntry<float> ClimbSpeedDown;
         public static BepInEx.Configuration.ConfigEntry<float> StaminaDrainPerSecond;
@@ -25,13 +26,14 @@ namespace Valheim_Climbing_Mod
         private void Awake()
         {
             ClimbKey = Config.Bind("General", "ClimbKey", KeyCode.LeftAlt, "Key to trigger climbing (default: LeftAlt)");
+            ClimbKey2 = Config.Bind("General", "ClimbKey2", KeyCode.None, "Optional second key that must be held along with ClimbKey.");
             ToggleClimbKey = Config.Bind("General", "ToggleClimbKey", false, "When enabled, pressing the climb key toggles climbing instead of requiring the key to be held.");
             ClimbSpeedUp = Config.Bind("Movement", "ClimbSpeedUp", 1.0f, "Base climb speed when moving upward (W).");
             ClimbSpeedDown = Config.Bind("Movement", "ClimbSpeedDown", 1.0f, "Base climb speed when moving downward or sideways (S/A/D).");
             StaminaDrainPerSecond = Config.Bind("Movement", "StaminaDrainPerSecond", 2.0f, "Stamina drained per second while climbing (scaled by movement).");
             var lHarmony = new Harmony("com.rotceh.valheimclimbingmod");
             lHarmony.PatchAll();
-            Logger.LogInfo($"Valheim Climbing Mod loaded. Climb key: {ClimbKey.Value}");
+            Logger.LogInfo($"Valheim Climbing Mod loaded. Climb key: {ClimbKey.Value} + Modifier: {ClimbKey2.Value}");
             ClimbAnimationController.Initialize(Logger);
         }
     }
@@ -89,9 +91,11 @@ namespace Valheim_Climbing_Mod
             // Only read input if the game allows it
             if (CallTakeInput(__instance))
             {
+                bool modifierHeld = ClimbingModPlugin.ClimbKey2.Value == KeyCode.None || Input.GetKey(ClimbingModPlugin.ClimbKey2.Value);
+
                 if (toggleMode)
                 {
-                    if (Input.GetKeyDown(ClimbingModPlugin.ClimbKey.Value))
+                    if (modifierHeld && Input.GetKeyDown(ClimbingModPlugin.ClimbKey.Value))
                     {
                         climbData.toggleActive = !climbData.toggleActive;
                         if (!climbData.toggleActive && climbData.isClimbing)
@@ -104,7 +108,7 @@ namespace Valheim_Climbing_Mod
                 }
                 else
                 {
-                    climbKeyHeld = Input.GetKey(ClimbingModPlugin.ClimbKey.Value);
+                    climbKeyHeld = modifierHeld && Input.GetKey(ClimbingModPlugin.ClimbKey.Value);
                     if (!climbKeyHeld)
                     {
                         climbData.toggleActive = false;

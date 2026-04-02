@@ -11,7 +11,8 @@ namespace Valheim_Climbing_Mod
         // Distance to check for a climbable surface in front of the player.
         public const float DETECTION_DISTANCE = 0.6f;
 
-        public const float MIN_SURFACE_ANGLE = 10f;
+        // Require a clearly steep surface before climbing can start/continue.
+        public const float MIN_SURFACE_ANGLE = 55f;
 
         public const float MAX_SURFACE_ANGLE = 240f;
 

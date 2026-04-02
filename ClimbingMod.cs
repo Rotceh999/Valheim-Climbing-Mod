@@ -45,7 +45,14 @@ namespace Valheim_Climbing_Mod
     public class Player_FixedUpdate_Patch
     {
         private static readonly int SurfaceLayerMask = LayerMask.GetMask("Default", "static_solid", "terrain", "piece", "Default_small");
+        private static readonly FieldInfo MaxAirAltitudeField = AccessTools.Field(typeof(Character), "m_maxAirAltitude");
+        private static readonly FieldInfo LastGroundPointField = AccessTools.Field(typeof(Character), "m_lastGroundPoint");
         private static readonly float[] ProbeHeights = { 1.2f, 0.7f, 0.2f };
+        private static readonly float[] StartProbeHeights = { 1.15f, 0.8f };
+        private static readonly float[] StartProbeYawOffsets = { 0f, -20f, 20f };
+        private const int RequiredStableStartFrames = 3;
+        private const float MinFacingWallDot = 0.55f;
+        private const float MinStartHitHeightOffset = 0.25f;
         private static readonly Vector3[] WorldProbeDirections =
         {
             Vector3.up,
@@ -112,6 +119,7 @@ namespace Valheim_Climbing_Mod
                     if (!climbKeyHeld)
                     {
                         climbData.toggleActive = false;
+                        climbData.validStartSurfaceFrames = 0;
                     }
                 }
             }
@@ -128,6 +136,10 @@ namespace Valheim_Climbing_Mod
                 if (climbKeyHeld)
                 {
                     TryStartClimbing(__instance, climbData);
+                }
+                else
+                {
+                    climbData.validStartSurfaceFrames = 0;
                 }
             }
             else
@@ -187,13 +199,78 @@ namespace Valheim_Climbing_Mod
         {
             if (!PlayerHasClimbStamina(player))
             {
+                climbData.validStartSurfaceFrames = 0;
                 return;
             }
 
-            if (TryGetSurfaceNormal(player, out Vector3 normal))
+            if (TryGetStartSurfaceNormal(player, out Vector3 normal))
             {
-                StartClimbing(player, climbData, normal);
+                climbData.validStartSurfaceFrames++;
+                if (climbData.validStartSurfaceFrames >= RequiredStableStartFrames)
+                {
+                    StartClimbing(player, climbData, normal);
+                }
             }
+            else
+            {
+                climbData.validStartSurfaceFrames = 0;
+            }
+        }
+
+        private static bool TryGetStartSurfaceNormal(Player player, out Vector3 normal)
+        {
+            Transform t = player.transform;
+            Vector3 planarForward = Vector3.ProjectOnPlane(t.forward, Vector3.up);
+            if (planarForward.sqrMagnitude < 0.01f)
+            {
+                planarForward = t.forward;
+            }
+
+            planarForward.Normalize();
+            float maxDistance = ClimbingConfig.DETECTION_DISTANCE + 0.2f;
+
+            foreach (float height in StartProbeHeights)
+            {
+                Vector3 origin = t.position + Vector3.up * height;
+
+                foreach (float yawOffset in StartProbeYawOffsets)
+                {
+                    Vector3 dir = Quaternion.AngleAxis(yawOffset, t.up) * planarForward;
+                    if (!Physics.SphereCast(origin, 0.3f, dir, out RaycastHit hit, maxDistance, SurfaceLayerMask))
+                    {
+                        continue;
+                    }
+
+                    float surfaceAngle = Vector3.Angle(Vector3.up, hit.normal);
+                    if (surfaceAngle < ClimbingConfig.MIN_SURFACE_ANGLE || surfaceAngle > ClimbingConfig.MAX_SURFACE_ANGLE)
+                    {
+                        continue;
+                    }
+
+                    // Require the wall to be in front of the player and above foot level.
+                    float facingDot = Vector3.Dot(-hit.normal.normalized, dir.normalized);
+                    if (facingDot < MinFacingWallDot || hit.point.y < t.position.y + MinStartHitHeightOffset)
+                    {
+                        continue;
+                    }
+
+                    normal = hit.normal;
+                    return true;
+                }
+            }
+
+            normal = Vector3.zero;
+            return false;
+        }
+
+        public static bool HasReliableClimbSurface(Player player, ClimbingState.ClimbingData climbData)
+        {
+            if (player == null || climbData == null || !climbData.isClimbing)
+            {
+                return false;
+            }
+
+            return TryGetSurfaceNormal(player, out _, climbData.surfaceNormal);
         }
 
         private static bool PlayerHasClimbStamina(Player player)
@@ -205,6 +282,10 @@ namespace Valheim_Climbing_Mod
         {
             climbData.isClimbing = true;
             climbData.surfaceNormal = surfaceNormal;
+            climbData.validStartSurfaceFrames = 0;
+
+            // Starting a controlled climb should clear any pending fall carryover.
+            ResetFallCalculation(player);
 
             // Sync state
             ZNetView nview = player.GetComponent<ZNetView>();
@@ -226,9 +307,30 @@ namespace Valheim_Climbing_Mod
             ClimbAnimationController.Begin(player);
         }
 
+        public static void ResetFallCalculation(Player player)
+        {
+            if (player == null)
+            {
+                return;
+            }
+
+            float currentY = player.transform.position.y;
+
+            if (MaxAirAltitudeField != null)
+            {
+                MaxAirAltitudeField.SetValue(player, currentY);
+            }
+
+            if (LastGroundPointField != null)
+            {
+                LastGroundPointField.SetValue(player, player.transform.position);
+            }
+        }
+
         public static void StopClimbing(Player player, ClimbingState.ClimbingData climbData)
         {
             climbData.isClimbing = false;
+            climbData.validStartSurfaceFrames = 0;
 
             // Sync state
             ZNetView nview = player.GetComponent<ZNetView>();
@@ -323,6 +425,9 @@ namespace Valheim_Climbing_Mod
             var rigidbody = player.GetComponent<Rigidbody>();
             if (rigidbody == null) return;
             rigidbody.useGravity = false;
+
+            // Keep fall state synced to the current climb position while descending.
+            Player_FixedUpdate_Patch.ResetFallCalculation(player);
 
             // Get input
             float forwardInput = Input.GetAxis("Vertical");   // W/S keys
@@ -559,6 +664,12 @@ namespace Valheim_Climbing_Mod
             // Prevent Fall Damage
             if (hit.m_hitType == HitData.HitType.Fall)
             {
+                var climbData = ClimbingState.GetOrCreate(player);
+                if (!Player_FixedUpdate_Patch.HasReliableClimbSurface(player, climbData))
+                {
+                    return;
+                }
+
                 hit.m_damage = new HitData.DamageTypes();
                 hit.m_pushForce = 0f;
                 return;

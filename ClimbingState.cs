@@ -19,6 +19,9 @@ namespace Valheim_Climbing_Mod
             public bool wasGravityEnabled = true;
 
             public bool toggleActive = false;
+
+            // Number of consecutive FixedUpdate checks with a valid climb-start surface.
+            public int validStartSurfaceFrames = 0;
         }
 
         public static ClimbingData GetOrCreate(Player player)

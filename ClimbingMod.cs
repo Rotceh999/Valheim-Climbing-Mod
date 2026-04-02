@@ -1,12 +1,8 @@
 using BepInEx;
-using BepInEx.Logging;
 using HarmonyLib;
 using System.Collections.Generic;
-using System.IO;
 using System.Reflection;
 using UnityEngine;
-using UnityEngine.Animations;
-using UnityEngine.Playables;
 
 namespace Valheim_Climbing_Mod
 {
@@ -21,6 +17,9 @@ namespace Valheim_Climbing_Mod
         public static BepInEx.Configuration.ConfigEntry<float> ClimbSpeedUp;
         public static BepInEx.Configuration.ConfigEntry<float> ClimbSpeedDown;
         public static BepInEx.Configuration.ConfigEntry<float> StaminaDrainPerSecond;
+        public static BepInEx.Configuration.ConfigEntry<float> ClimbSkillXpPerSecond;
+        public static BepInEx.Configuration.ConfigEntry<float> ClimbSkillBaseXpPerLevel;
+        public static BepInEx.Configuration.ConfigEntry<float> ClimbSkillXpIncreasePerLevel;
         public static BepInEx.Configuration.ConfigEntry<bool> ToggleClimbKey;
 
         private void Awake()
@@ -31,6 +30,9 @@ namespace Valheim_Climbing_Mod
             ClimbSpeedUp = Config.Bind("Movement", "ClimbSpeedUp", 1.0f, "Base climb speed when moving upward (W).");
             ClimbSpeedDown = Config.Bind("Movement", "ClimbSpeedDown", 1.0f, "Base climb speed when moving downward or sideways (S/A/D).");
             StaminaDrainPerSecond = Config.Bind("Movement", "StaminaDrainPerSecond", 2.0f, "Stamina drained per second while climbing (scaled by movement).");
+            ClimbSkillXpPerSecond = Config.Bind("Progression", "ClimbSkillXpPerSecond", 6f, "Climbing XP gained per second while climbing.");
+            ClimbSkillBaseXpPerLevel = Config.Bind("Progression", "ClimbSkillBaseXpPerLevel", 100f, "XP required for level 0 -> 1.");
+            ClimbSkillXpIncreasePerLevel = Config.Bind("Progression", "ClimbSkillXpIncreasePerLevel", 40f, "Additional XP required per level.");
             var lHarmony = new Harmony("com.rotceh.valheimclimbingmod");
             lHarmony.PatchAll();
             Logger.LogInfo($"Valheim Climbing Mod loaded. Climb key: {ClimbKey.Value} + Modifier: {ClimbKey2.Value}");
@@ -45,6 +47,12 @@ namespace Valheim_Climbing_Mod
     public class Player_FixedUpdate_Patch
     {
         private static readonly int SurfaceLayerMask = LayerMask.GetMask("Default", "static_solid", "terrain", "piece", "Default_small");
+        private const float TopOutProbeHeight = 1.2f;
+        private const float TopOutProbeForwardOffset = 0.55f;
+        private const float TopOutGroundCheckDistance = 1.6f;
+        private const float TopOutWallCheckDistance = 0.65f;
+        private const float TopOutJumpUpSpeed = 5.5f;
+        private const float TopOutJumpForwardSpeed = 2.2f;
         private static readonly FieldInfo MaxAirAltitudeField = AccessTools.Field(typeof(Character), "m_maxAirAltitude");
         private static readonly FieldInfo LastGroundPointField = AccessTools.Field(typeof(Character), "m_lastGroundPoint");
         private static readonly float[] ProbeHeights = { 1.2f, 0.7f, 0.2f };
@@ -92,6 +100,8 @@ namespace Valheim_Climbing_Mod
             if (__instance.IsDead() || __instance.InCutscene() || __instance.IsTeleporting()) return;
 
             var climbData = ClimbingState.GetOrCreate(__instance);
+            float climbSkill = ClimbSkillProgression.GetSkill(__instance);
+            climbData.climbSkill = climbSkill;
             bool toggleMode = ClimbingModPlugin.ToggleClimbKey?.Value ?? false;
             bool climbKeyHeld = false;
 
@@ -161,13 +171,73 @@ namespace Valheim_Climbing_Mod
                     if (TryGetSurfaceNormal(__instance, out Vector3 refreshedNormal, climbData.surfaceNormal))
                     {
                         climbData.surfaceNormal = refreshedNormal;
+                        ClimbSkillProgression.AddSkill(__instance, Time.deltaTime);
+                        float updatedSkill = ClimbSkillProgression.GetSkill(__instance);
+                        climbData.climbSkill = updatedSkill;
                     }
                     else
                     {
+                        Vector3 previousSurfaceNormal = climbData.surfaceNormal;
                         StopClimbing(__instance, climbData);
+                        TryAutoTopOutJump(__instance, previousSurfaceNormal);
                     }
                 }
             }
+        }
+
+        private static void TryAutoTopOutJump(Player player, Vector3 previousSurfaceNormal)
+        {
+            if (player == null || previousSurfaceNormal == Vector3.zero)
+            {
+                return;
+            }
+
+            Transform t = player.transform;
+            Vector3 wallForward = Vector3.ProjectOnPlane(-previousSurfaceNormal, Vector3.up);
+            if (wallForward.sqrMagnitude < 0.01f)
+            {
+                wallForward = Vector3.ProjectOnPlane(t.forward, Vector3.up);
+            }
+
+            if (wallForward.sqrMagnitude < 0.01f)
+            {
+                return;
+            }
+
+            wallForward.Normalize();
+
+            // If a wall still blocks the path, we are not topping out yet.
+            Vector3 wallCheckOrigin = t.position + Vector3.up * 1f;
+            if (Physics.SphereCast(wallCheckOrigin, 0.25f, wallForward, out _, TopOutWallCheckDistance, SurfaceLayerMask))
+            {
+                return;
+            }
+
+            // Confirm there is reachable walkable ground just ahead of the player.
+            Vector3 groundProbeOrigin = t.position + Vector3.up * TopOutProbeHeight + wallForward * TopOutProbeForwardOffset;
+            if (!Physics.Raycast(groundProbeOrigin, Vector3.down, out RaycastHit groundHit, TopOutGroundCheckDistance, SurfaceLayerMask))
+            {
+                return;
+            }
+
+            float groundAngle = Vector3.Angle(Vector3.up, groundHit.normal);
+            if (groundAngle > 50f)
+            {
+                return;
+            }
+
+            Rigidbody rigidbody = player.GetComponent<Rigidbody>();
+            if (rigidbody == null)
+            {
+                return;
+            }
+
+            Vector3 currentVelocity = rigidbody.linearVelocity;
+            Vector3 planarVelocity = Vector3.ProjectOnPlane(currentVelocity, Vector3.up);
+            planarVelocity += wallForward * TopOutJumpForwardSpeed;
+
+            float verticalSpeed = Mathf.Max(currentVelocity.y, TopOutJumpUpSpeed);
+            rigidbody.linearVelocity = new Vector3(planarVelocity.x, verticalSpeed, planarVelocity.z);
         }
 
         static void HandleRemotePlayer(Player player)
@@ -175,7 +245,10 @@ namespace Valheim_Climbing_Mod
             ZNetView nview = player.GetComponent<ZNetView>();
             if (nview == null || !nview.IsValid()) return;
 
-            bool isClimbing = nview.GetZDO().GetBool("IsClimbing", false);
+            ZDO zdo = nview.GetZDO();
+
+            bool isClimbing = zdo.GetBool("IsClimbing", false);
+            float climbSkill = zdo.GetFloat(ClimbSkillProgression.SkillKey, 0f);
             bool isAnimationActive = ClimbAnimationController.IsActive(player);
 
             if (isClimbing && !isAnimationActive)
@@ -190,8 +263,9 @@ namespace Valheim_Climbing_Mod
             if (isClimbing)
             {
                  // Read synced input from ZDO
-                 float climbInput = nview.GetZDO().GetFloat("ClimbInput", 0f);
-                 ClimbAnimationController.Update(player, climbInput, 1f); 
+                  float climbInput = zdo.GetFloat("ClimbInput", 0f);
+                float skillMultiplier = ClimbSkillProgression.GetSpeedMultiplier(climbSkill);
+                  ClimbAnimationController.Update(player, climbInput, skillMultiplier); 
             }
         }
 
@@ -292,6 +366,7 @@ namespace Valheim_Climbing_Mod
             if (nview != null && nview.IsValid())
             {
                 nview.GetZDO().Set("IsClimbing", true);
+                nview.GetZDO().Set(ClimbSkillProgression.SkillKey, ClimbSkillProgression.GetSkill(player));
             }
 
             // Disable gravity and zero out velocity
@@ -337,6 +412,7 @@ namespace Valheim_Climbing_Mod
             if (nview != null && nview.IsValid())
             {
                 nview.GetZDO().Set("IsClimbing", false);
+                nview.GetZDO().Set(ClimbSkillProgression.SkillKey, ClimbSkillProgression.GetSkill(player));
             }
 
             // Re-enable gravity
@@ -437,6 +513,8 @@ namespace Valheim_Climbing_Mod
             var climbData = ClimbingState.GetOrCreate(player);
             Vector3 surfaceNormal = climbData.surfaceNormal != Vector3.zero ? climbData.surfaceNormal : -player.transform.forward;
             float slopeSpeedFactor = CalculateSlopeSpeedFactor(surfaceNormal);
+            float skillSpeedMultiplier = Mathf.Lerp(1f, 3f, Mathf.Clamp01(climbData.climbSkill / 100f));
+            float totalSpeedMultiplier = slopeSpeedFactor * skillSpeedMultiplier;
 
             // Calculate movement directions relative to the surface
             Vector3 climbDirection = ResolveClimbDirection(surfaceNormal, player.transform);
@@ -446,13 +524,13 @@ namespace Valheim_Climbing_Mod
             if (Mathf.Abs(forwardInput) > 0.1f && climbDirection.sqrMagnitude > 0.01f)
             {
                 float speed = forwardInput > 0f ? ClimbingConfig.CLIMB_SPEED_UP : ClimbingConfig.CLIMB_SPEED_DOWN;
-                climbVelocity += climbDirection * speed * forwardInput * slopeSpeedFactor;
+                climbVelocity += climbDirection * speed * forwardInput * totalSpeedMultiplier;
             }
 
             // Lateral movement across the surface (A/D)
             if (Mathf.Abs(rightInput) > 0.1f && lateralDirection.sqrMagnitude > 0.01f)
             {
-                climbVelocity += lateralDirection * ClimbingConfig.CLIMB_SPEED_DOWN * rightInput;
+                climbVelocity += lateralDirection * ClimbingConfig.CLIMB_SPEED_DOWN * rightInput * totalSpeedMultiplier;
             }
 
             // Apply a gentle push toward the surface so the player sticks while climbing.
@@ -470,7 +548,7 @@ namespace Valheim_Climbing_Mod
 
             // Update animation state
             float animationInput = ResolveAnimationInput(forwardInput, rightInput);
-            ClimbAnimationController.Update(player, animationInput, slopeSpeedFactor);
+            ClimbAnimationController.Update(player, animationInput, totalSpeedMultiplier);
 
             // Sync input for remote players
             ZNetView nview = player.GetComponent<ZNetView>();
